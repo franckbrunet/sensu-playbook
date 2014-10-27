@@ -1,0 +1,6 @@
+{
+  "redis": {
+    "host": "{{ redis_server }}",
+    "port": {{ redis_port }}
+  }
+}

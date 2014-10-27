@@ -1,0 +1,172 @@
+---
+
+- hosts: sensu 
+  user: root 
+  sudo: False
+ 
+  vars:
+     ## System ##
+     yum_repo_path: "/etc/yum.repos.d/"
+     
+     ## Sensu Globals ##
+     sensu_config_root: "/etc/sensu/conf.d/"
+     sensu_config_ssl: "/etc/sensu/ssl/"
+     sensu_repo_file: "sensu.repo"
+     
+     ## Uchiwa ##
+     uchiwa_sensu_config_file: "uchiwa.json"
+     uchiwa_sensu_user: ""
+     uchiwa_sensu_password: ""
+     uchiwa_sensu_port: 3000
+     uchiwa_sensu_stats: 10
+     uchiwa_sensu_refresh: 10000
+     
+
+     ## RabbitMQ Config ##
+     rabbitmq_repo_file: "erlang_solutions.repo"
+     rabbitmq_sensu_config_file: "rabbitmq.json"
+     rabbitmq_config_path: "/etc/rabbitmq/"
+     rabbitmq_config_file: "rabbitmq.config"
+     rabbitmq_package_url: "http://www.rabbitmq.com/releases/rabbitmq-server/v3.4.0/rabbitmq-server-3.4.0-1.noarch.rpm"
+     rabbitmq_ssl_path: "/etc/rabbitmq/ssl/"
+     rabbitmq_server: "localhost"
+     rabbitmq_port: 5671 
+     rabbitmq_user: "sensu" 
+     rabbitmq_password: "sensu"
+     rabbitmq_vhost: "/sensu"
+
+     ## Redis Config ##
+     redis_repo: "/etc/yum.repos.d/remi.repo"
+     redis_sensu_config_file: "redis.json"
+     redis_server: "localhost"
+     redis_port: 6379
+
+     ## Sensu API Config ##
+     sensu_api_config_file: "api.json"
+     sensu_api_server: "localhost"
+     sensu_api_port: 4567
+     sensu_api_ssl: "false"
+     sensu_api_user: "admin"
+     sensu_api_password: "admin"
+     sensu_api_timeout: 5000
+     sensu_api_path: ""
+
+     ## Sensu Client Config ##
+     sensu_client_config_file: "client.json"
+     sensu_client_name: "us0101aft002"
+     sensu_client_address: "localhost"
+     sensu_client_subscriptions: [ "all" ]
+
+     ## Certificate Script ##
+     ssl_script_url: "http://sensuapp.org/docs/0.14/tools/ssl_certs.tar"
+     ssl_script_file: "ssl_cert.tar"
+     ssl_script_path: "/tmp/ssl_certs/"
+
+     ## Certificate Config ##
+     certififcate_file_path: "/etc/sensu/ssl"
+     certificate_cert_pem: "{{ certififcate_file_path }}/cert.pem"
+     certificate_key_pem: "{{ certififcate_file_path }}/key.pem"
+ 
+  tasks:
+     - name: Cleaning Up {{ ssl_script_path|dirname }}
+       command: rm -rf {{ ssl_script_path|dirname }}
+       ignore_errors: True
+     - name: Cleaning Up /tmp/{{ ssl_script_file }} file
+       file: path=/tmp/{{ ssl_script_file }} state=absent
+     - name: SSL Certs Download Script
+       get_url: url={{ ssl_script_url }} dest=/tmp/{{ ssl_script_file }}
+     - name: SSL Certs Extract
+       unarchive: src=/tmp/{{ ssl_script_file }} dest=/tmp copy=no
+     - name: SSL Certs Generate
+       command: sh ssl_certs.sh generate
+       args:
+         chdir: "{{ ssl_script_path }}"
+
+
+     - name: RabbitMQ Install erlang repo
+       action: template src=templates/{{ rabbitmq_repo_file }} dest={{ yum_repo_path }}{{ rabbitmq_repo_file }}
+     - name: RabbitMQ Install erlang
+       yum: name=erlang state=present
+     - name: RabbitMQ Install 
+       command: yum localinstall -y --nogpg {{ rabbitmq_package_url }}
+     - name: RabbitMQ Create config folder
+       file: path={{ rabbitmq_config_path }} state=directory recurse=true
+     - name: RabbitMQ Create SSL folder
+       file: path={{ rabbitmq_ssl_path }} state=directory recurse=true
+     - name: RabbitMQ Copy cacert.pem
+       command: cp "{{ ssl_script_path }}sensu_ca/cacert.pem" "{{ rabbitmq_ssl_path }}cacert.pem"
+     - name: RabbitMQ Copy cert.pem
+       command: cp "{{ ssl_script_path }}server/cert.pem" "{{ rabbitmq_ssl_path }}cert.pem"
+     - name: RabbitMQ Copy key.pem
+       command: cp "{{ ssl_script_path }}server/key.pem" "{{ rabbitmq_ssl_path }}key.pem"
+     - name: RabbitMQ Configure
+       action: template src=templates/{{ rabbitmq_config_file }} dest={{ rabbitmq_config_path }}{{ rabbitmq_config_file }}
+     - name: RabbitMQ Restart server
+       service: name=rabbitmq-server state=restarted enabled=yes
+     - name: RabbitMQ Check VHost
+       command: rabbitmqctl list_vhosts {{ rabbitmq_vhost }}
+       register: check_vhost
+       ignore_errors: True
+     # - debug: msg="Check_vhost = - {{ check_vhost.stdout_lines[1] }} -"
+     - name: RabbitMQ Add VHost
+       command: rabbitmqctl add_vhost {{ rabbitmq_vhost }}
+       when: check_vhost.stdout_lines[1] == "undefined"
+     - name: RabbitMQ Check User
+       command: rabbitmqctl list_users | grep sensu
+       register: check_user
+       ignore_errors: True
+     - debug: msg="Check_user = - {{ check_user.stdout }} -"
+     - name: RabbitMQ Add user
+       command: rabbitmqctl add_user {{ rabbitmq_user }} {{ rabbitmq_password }}
+       when: check_user.stdout == ""
+     - name: RabbitMQ Set Permissions
+       command: rabbitmqctl set_permissions -p {{ rabbitmq_vhost }} {{ rabbitmq_user }} ".*" ".*" ".*"
+       when: check_user.stdout == ""
+
+     
+
+     - name: Redis Install
+       yum: name=redis state=present
+     - name: Redis Start Server
+       service: name=redis state=restarted enabled=yes
+       
+     - name: Sensu Add Repository
+       action: template src=templates/{{ sensu_repo_file }} dest={{ yum_repo_path }}{{ sensu_repo_file }}
+     - name: Sensu Install
+       yum: name=sensu state=present
+     - name: Sensu create config folder
+       file: path={{ sensu_config_root }} state=directory recurse=yes
+     - name: Sensu create ssl config folder
+       file: path={{ sensu_config_ssl }} state=directory recurse=yes
+     - name: Sensu Copy cert.pem
+       command: cp "{{ ssl_script_path }}client/cert.pem" "{{ sensu_config_ssl }}cert.pem"
+     - name: Sensu Copy key.pem
+       command: cp "{{ ssl_script_path }}client/key.pem" "{{ sensu_config_ssl }}key.pem"
+     - name: Sensu add RabbitMQ config
+       action: template src=templates/{{ rabbitmq_sensu_config_file }} dest={{ sensu_config_root }}{{ rabbitmq_sensu_config_file }}
+     - name: Sensu add Redis config
+       action: template src=templates/{{ redis_sensu_config_file }} dest={{ sensu_config_root }}{{ redis_sensu_config_file }}
+     - name: Sensu add API config
+       action: template src=templates/{{ sensu_api_config_file }} dest={{ sensu_config_root }}{{ sensu_api_config_file }}
+     - name: Sensu add Client config
+       action: template src=templates/{{ sensu_client_config_file }} dest={{ sensu_config_root }}{{ sensu_client_config_file }}
+     - name: Sensu Start Server
+       service: name=sensu-server state=restarted enabled=yes
+     - name: Sensu Start Client
+       service: name=sensu-client state=restarted enabled=yes
+     - name: Sensu Start API
+       service: name=sensu-api state=restarted enabled=yes
+
+     - name: Uchiwa Config
+       action: template src=templates/{{ uchiwa_sensu_config_file }} dest={{ sensu_config_root }}{{ uchiwa_sensu_config_file }}
+     - name: Uchiwa Install
+       yum: name=uchiwa state=present
+     - name: Uchiwa Start Service
+       service: name=uchiwa state=restarted enabled=yes
+     
+     
+     
+     
+     
+     
+     

@@ -15,6 +15,7 @@
      
      ## Uchiwa ##
      uchiwa_sensu_config_file: "uchiwa.json"
+     uchiwa_sensu_config_path: "/etc/sensu/"
      uchiwa_sensu_user: ""
      uchiwa_sensu_password: ""
      uchiwa_sensu_port: 3000
@@ -68,11 +69,15 @@
      certificate_key_pem: "{{ certififcate_file_path }}/key.pem"
  
   tasks:
+  
+    # Cleaning up environment
      - name: Cleaning Up {{ ssl_script_path|dirname }}
        command: rm -rf {{ ssl_script_path|dirname }}
        ignore_errors: True
      - name: Cleaning Up /tmp/{{ ssl_script_file }} file
        file: path=/tmp/{{ ssl_script_file }} state=absent
+       
+    # Creating server certificates
      - name: SSL Certs Download Script
        get_url: url={{ ssl_script_url }} dest=/tmp/{{ ssl_script_file }}
      - name: SSL Certs Extract
@@ -82,7 +87,7 @@
        args:
          chdir: "{{ ssl_script_path }}"
 
-
+    # RabbitMQ Install
      - name: RabbitMQ Install erlang repo
        action: template src=templates/{{ rabbitmq_repo_file }} dest={{ yum_repo_path }}{{ rabbitmq_repo_file }}
      - name: RabbitMQ Install erlang
@@ -104,32 +109,30 @@
      - name: RabbitMQ Restart server
        service: name=rabbitmq-server state=restarted enabled=yes
      - name: RabbitMQ Check VHost
-       command: rabbitmqctl list_vhosts {{ rabbitmq_vhost }}
+       command: rabbitmqctl list_vhosts
        register: check_vhost
        ignore_errors: True
-     # - debug: msg="Check_vhost = - {{ check_vhost.stdout_lines[1] }} -"
      - name: RabbitMQ Add VHost
        command: rabbitmqctl add_vhost {{ rabbitmq_vhost }}
-       when: check_vhost.stdout_lines[1] == "undefined"
+       when: check_vhost.stdout.find('sensu') == -1
      - name: RabbitMQ Check User
-       command: rabbitmqctl list_users | grep sensu
+       shell: rabbitmqctl list_users
        register: check_user
        ignore_errors: True
-     - debug: msg="Check_user = - {{ check_user.stdout }} -"
      - name: RabbitMQ Add user
        command: rabbitmqctl add_user {{ rabbitmq_user }} {{ rabbitmq_password }}
-       when: check_user.stdout == ""
+       when: check_user.stdout.find('sensu') == -1
      - name: RabbitMQ Set Permissions
        command: rabbitmqctl set_permissions -p {{ rabbitmq_vhost }} {{ rabbitmq_user }} ".*" ".*" ".*"
        when: check_user.stdout == ""
 
-     
-
+    # Install Redis
      - name: Redis Install
        yum: name=redis state=present
      - name: Redis Start Server
        service: name=redis state=restarted enabled=yes
-       
+
+    # Install Sensu
      - name: Sensu Add Repository
        action: template src=templates/{{ sensu_repo_file }} dest={{ yum_repo_path }}{{ sensu_repo_file }}
      - name: Sensu Install
@@ -157,10 +160,11 @@
      - name: Sensu Start API
        service: name=sensu-api state=restarted enabled=yes
 
-     - name: Uchiwa Config
-       action: template src=templates/{{ uchiwa_sensu_config_file }} dest={{ sensu_config_root }}{{ uchiwa_sensu_config_file }}
+    # Install Uchiwa
      - name: Uchiwa Install
        yum: name=uchiwa state=present
+     - name: Uchiwa Config
+       action: template src=templates/{{ uchiwa_sensu_config_file }} dest={{ uchiwa_sensu_config_path }}{{ uchiwa_sensu_config_file }}
      - name: Uchiwa Start Service
        service: name=uchiwa state=restarted enabled=yes
      
